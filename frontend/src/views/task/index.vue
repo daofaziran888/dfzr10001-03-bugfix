@@ -63,23 +63,28 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import { request } from '@/api/client'
 
 type Row = Record<string, string | number | null>
 
 const ENDPOINT = '/api/task'
-const columns = ["任务编号", "任务名称", "关联源端", "采集频率", "增量字段", "起始水位", "批次大小", "执行窗口"]
-const actions = ["提交执行", "暂停任务", "恢复任务"]
+const columns = ["任务编号", "任务名称", "关联源端", "采集频率", "增量字段", "起始水位", "批次大小", "执行窗口", "状态"]
+const actions = ["提交执行", "暂停任务", "恢复任务", "取消任务"]
 const statuses = ["草稿", "待执行", "执行中", "已完成"]
-const stats = [{"label": "采集任务总数", "value": 0}, {"label": "待执行任务", "value": 0}, {"label": "执行中任务", "value": 0}]
 
 const rows = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+
+const stats = computed(() => [
+  { label: '采集任务总数', value: total.value },
+  { label: '待执行任务', value: rows.value.filter((row) => row.status === '待执行').length },
+  { label: '执行中任务', value: rows.value.filter((row) => row.status === '执行中').length },
+])
 
 function resetFilters() {
   filters.value = {}
@@ -94,15 +99,27 @@ function openCreate() {
   errorMessage.value = '采集任务登记入口尚未接入审批流'
 }
 
+function statusText(row: Row): string {
+  const base = String(row.status ?? '—')
+  if (row.cancelled) return `${base}（已取消）`
+  if (row.paused) return `${base}（已暂停）`
+  return base
+}
+
 async function runAction(action: string, row: Row) {
   errorMessage.value = ''
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values: { action } }),
     })
     if (!response.ok) {
       throw new Error('采集任务动作未生效，请稍后重试')
+    }
+    const payload = await response.json()
+    if (!payload.ok) {
+      errorMessage.value = payload.message || '采集任务动作被拒绝'
+      return
     }
     await reload()
   } catch (error) {
@@ -119,7 +136,8 @@ async function reload() {
       throw new Error('采集任务列表读取失败')
     }
     const payload = await response.json()
-    rows.value = payload.items ?? []
+    const items: Row[] = payload.items ?? []
+    rows.value = items.map((item) => ({ ...item, 状态: statusText(item) }))
     total.value = payload.total ?? rows.value.length
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '采集任务列表读取失败'
